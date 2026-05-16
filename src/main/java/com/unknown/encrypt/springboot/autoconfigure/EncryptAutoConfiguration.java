@@ -3,6 +3,7 @@ package com.unknown.encrypt.springboot.autoconfigure;
 import com.unknown.encrypt.algorithm.EncryptAlgorithm;
 import com.unknown.encrypt.core.EncryptionConfig;
 import com.unknown.encrypt.core.EncryptionFilter;
+import com.unknown.encrypt.core.EncryptionRuleRegistry;
 import com.unknown.encrypt.springboot.endpoint.EncryptEndpoint;
 import com.unknown.encrypt.springboot.init.ApiEncryptDataInit;
 import org.springframework.beans.factory.ObjectProvider;
@@ -11,6 +12,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.DispatcherServlet;
@@ -47,11 +49,11 @@ public class EncryptAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    public EncryptionFilter encryptionFilter() {
+    public EncryptionFilter encryptionFilter(EncryptionRuleRegistry encryptionRuleRegistry) {
         if (encryptAlgorithm != null) {
-            return new EncryptionFilter(encryptionConfig, encryptAlgorithm, dispatcherServlet);
+            return new EncryptionFilter(encryptionConfig, encryptionRuleRegistry, encryptAlgorithm, dispatcherServlet);
         }
-        return new EncryptionFilter(encryptionConfig, dispatcherServlet);
+        return new EncryptionFilter(encryptionConfig, encryptionRuleRegistry, dispatcherServlet);
     }
 
     @Bean
@@ -69,6 +71,13 @@ public class EncryptAutoConfiguration {
     @ConditionalOnMissingBean
     public ApiEncryptDataInit apiEncryptDataInit() {
         return new ApiEncryptDataInit();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public EncryptionRuleRegistry encryptionRuleRegistry(ApiEncryptDataInit apiEncryptDataInit,
+                                                         ApplicationContext applicationContext) {
+        return apiEncryptDataInit.createRuleRegistry(applicationContext, encryptionConfig);
     }
 
     @Configuration(proxyBeanMethods = false)

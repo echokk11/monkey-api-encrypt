@@ -35,30 +35,30 @@ public class RequestUriUtils {
         String deleteUri = firstMapping(deleteMapping);
         String requestUri = firstMapping(requestMapping);
 
-        if (StringUtils.hasText(getUri)) {
+        if (getMapping != null) {
             methodType = HttpMethodTypePrefixConstant.GET;
-            uri.append(formatUri(getUri));
+            appendUri(uri, getUri);
 
-        } else if (StringUtils.hasText(postUri)) {
+        } else if (postMapping != null) {
             methodType = HttpMethodTypePrefixConstant.POST;
-            uri.append(formatUri(postUri));
+            appendUri(uri, postUri);
 
-        } else if (StringUtils.hasText(putUri)) {
+        } else if (putMapping != null) {
             methodType = HttpMethodTypePrefixConstant.PUT;
-            uri.append(formatUri(putUri));
+            appendUri(uri, putUri);
 
-        } else if (StringUtils.hasText(deleteUri)) {
+        } else if (deleteMapping != null) {
             methodType = HttpMethodTypePrefixConstant.DELETE;
-            uri.append(formatUri(deleteUri));
+            appendUri(uri, deleteUri);
 
-        } else if (StringUtils.hasText(requestUri)) {
+        } else if (requestMapping != null) {
             RequestMethod requestMethod = RequestMethod.GET;
             if (requestMapping.method().length > 0) {
                 requestMethod = requestMapping.method()[0];
             }
 
             methodType = requestMethod.name().toLowerCase() + ":";
-            uri.append(formatUri(requestUri));
+            appendUri(uri, requestUri);
 
         }
 
@@ -77,6 +77,12 @@ public class RequestUriUtils {
             return uri;
         }
         return separator + uri;
+    }
+
+    private static void appendUri(StringBuilder uri, String path) {
+        if (StringUtils.hasText(path)) {
+            uri.append(formatUri(path));
+        }
     }
 
     private static String firstMapping(RequestMapping mapping) {

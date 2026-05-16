@@ -88,4 +88,11 @@ public class EncryptionResponseWrapper extends HttpServletResponseWrapper {
 		return new String(output.toByteArray(), charset);
 	}
 
+	public byte[] getResponseBytes() {
+		if (writer != null) {
+			writer.flush();
+		}
+		return output.toByteArray();
+	}
+
 }

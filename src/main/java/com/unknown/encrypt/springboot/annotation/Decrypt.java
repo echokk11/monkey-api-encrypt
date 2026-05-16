@@ -13,9 +13,17 @@ public @interface Decrypt {
 	String value() default "";
 
 	/**
-	 * Url参数解密，多个参数用因为逗号分隔，比如 name,age
+	 * URL 参数解密，多个参数用逗号分隔，比如 name,age。
+	 *
 	 * @return 解密参数信息
 	 */
+	String decryptParam() default "";
+
+	/**
+	 * @return 解密参数信息
+	 * @deprecated use {@link #decryptParam()}.
+	 */
+	@Deprecated
 	String decyptParam() default "";
 	
 }

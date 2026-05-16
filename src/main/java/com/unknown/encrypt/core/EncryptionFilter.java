@@ -9,186 +9,252 @@ import org.springframework.util.AntPathMatcher;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.DispatcherServlet;
 import org.springframework.web.servlet.HandlerExecutionChain;
 import org.springframework.web.servlet.HandlerMapping;
 
-import javax.servlet.*;
+import javax.servlet.FilterChain;
+import javax.servlet.ServletException;
+import javax.servlet.ServletOutputStream;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.util.*;
 
-/**
- *
- */
-public class EncryptionFilter implements Filter {
+public class EncryptionFilter extends OncePerRequestFilter {
 
-    private Logger logger = LoggerFactory.getLogger(EncryptionFilter.class);
+    private static final Logger logger = LoggerFactory.getLogger(EncryptionFilter.class);
 
-    private EncryptionConfig encryptionConfig;
+    private final EncryptionConfig encryptionConfig;
 
-    private EncryptAlgorithm encryptAlgorithm = new AesEncryptAlgorithm();
+    private final EncryptionRuleRegistry ruleRegistry;
 
-    private DispatcherServlet dispatcherServlet;
+    private final EncryptAlgorithm encryptAlgorithm;
+
+    private final DispatcherServlet dispatcherServlet;
+
+    private final AntPathMatcher antPathMatcher = new AntPathMatcher();
 
     public EncryptionFilter() {
-        this.encryptionConfig = new EncryptionConfig();
+        this(new EncryptionConfig());
     }
 
     public EncryptionFilter(EncryptionConfig config) {
-        this.encryptionConfig = config;
+        this(config, EncryptionRuleRegistry.fromConfig(config), new AesEncryptAlgorithm(), null);
     }
 
     public EncryptionFilter(EncryptionConfig config, DispatcherServlet dispatcherServlet) {
-        this.encryptionConfig = config;
-        this.dispatcherServlet = dispatcherServlet;
+        this(config, EncryptionRuleRegistry.fromConfig(config), new AesEncryptAlgorithm(), dispatcherServlet);
     }
 
-    public EncryptionFilter(EncryptionConfig config, EncryptAlgorithm encryptAlgorithm, DispatcherServlet dispatcherServlet) {
-        this.encryptionConfig = config;
-        this.encryptAlgorithm = encryptAlgorithm;
+    public EncryptionFilter(EncryptionConfig config,
+                            EncryptionRuleRegistry ruleRegistry,
+                            DispatcherServlet dispatcherServlet) {
+        this(config, ruleRegistry, new AesEncryptAlgorithm(), dispatcherServlet);
+    }
+
+    public EncryptionFilter(EncryptionConfig config,
+                            EncryptAlgorithm encryptAlgorithm,
+                            DispatcherServlet dispatcherServlet) {
+        this(config, EncryptionRuleRegistry.fromConfig(config), encryptAlgorithm, dispatcherServlet);
+    }
+
+    public EncryptionFilter(EncryptionConfig config,
+                            EncryptionRuleRegistry ruleRegistry,
+                            EncryptAlgorithm encryptAlgorithm,
+                            DispatcherServlet dispatcherServlet) {
+        this.encryptionConfig = config == null ? new EncryptionConfig() : config;
+        this.ruleRegistry = ruleRegistry == null ? EncryptionRuleRegistry.fromConfig(this.encryptionConfig) : ruleRegistry;
+        this.encryptAlgorithm = encryptAlgorithm == null ? new AesEncryptAlgorithm() : encryptAlgorithm;
         this.dispatcherServlet = dispatcherServlet;
     }
 
     public EncryptionFilter(String key) {
-        EncryptionConfig config = new EncryptionConfig();
-        config.setKey(key);
-        this.encryptionConfig = config;
+        this(configWithKey(key));
     }
 
     public EncryptionFilter(String key, List<String> responseEncryptUriList, List<String> requestDecryptUriList,
                             String responseCharset, boolean debug) {
-        this.encryptionConfig = new EncryptionConfig(key, responseEncryptUriList, requestDecryptUriList, responseCharset, debug);
+        this(new EncryptionConfig(key, responseEncryptUriList, requestDecryptUriList, responseCharset, debug));
     }
 
-    private AntPathMatcher antPathMatcher = new AntPathMatcher();
-
-    @Override
-    public void init(FilterConfig filterConfig) throws ServletException {
-
+    private static EncryptionConfig configWithKey(String key) {
+        EncryptionConfig config = new EncryptionConfig();
+        config.setKey(key);
+        return config;
     }
 
     @Override
-    public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws IOException, ServletException {
-
-        HttpServletRequest req = (HttpServletRequest) request;
-        HttpServletResponse resp = (HttpServletResponse) response;
-        String uri = req.getRequestURI();
+        String uri = request.getRequestURI();
         logger.debug("RequestURI: {}", uri);
 
-        // 调试模式不加解密
         if (encryptionConfig.isDebug()) {
-            chain.doFilter(req, resp);
+            chain.doFilter(request, response);
             return;
         }
 
-        boolean decryptionStatus = this.contains(encryptionConfig.getRequestDecryptUriList(), uri, req.getMethod(), req);
-        boolean encryptionStatus = this.contains(encryptionConfig.getResponseEncryptUriList(), uri, req.getMethod(), req);
-        boolean decryptionIgnoreStatus = this.contains(encryptionConfig.getRequestDecryptUriIgnoreList(), uri, req.getMethod(), req);
-        boolean encryptionIgnoreStatus = this.contains(encryptionConfig.getResponseEncryptUriIgnoreList(), uri, req.getMethod(), req);
-
-        // 没有配置具体加解密的URI默认全部都开启加解密
-        if (CollectionUtils.isEmpty(encryptionConfig.getRequestDecryptUriList())
-                && CollectionUtils.isEmpty(encryptionConfig.getResponseEncryptUriList())) {
-            decryptionStatus = true;
-            encryptionStatus = true;
-        }
-
-        // 接口在忽略加密列表中
-        if (encryptionIgnoreStatus) {
-            encryptionStatus = false;
-        }
-
-        // 接口在忽略解密列表中
-        if (decryptionIgnoreStatus) {
-            decryptionStatus = false;
-        }
-
-        // 没有加解密操作
-        if (!decryptionStatus && !encryptionStatus) {
-            chain.doFilter(req, resp);
+        EncryptionDecision decision = decide(request);
+        if (!decision.requiresProcessing()) {
+            chain.doFilter(request, response);
             return;
+        }
+
+        EncryptionRequestWrapper requestWrapper = null;
+        HttpServletRequest activeRequest = request;
+        if (decision.requiresRequestWrapper()) {
+            requestWrapper = new EncryptionRequestWrapper(request);
+            processDecryption(requestWrapper, request, decision);
+            activeRequest = requestWrapper;
         }
 
         EncryptionResponseWrapper responseWrapper = null;
-        EncryptionReqestWrapper requestWrapper = null;
-        // 配置了需要解密才处理
-        if (decryptionStatus) {
-            requestWrapper = new EncryptionReqestWrapper(req);
-            processDecryption(requestWrapper, req);
+        HttpServletResponse activeResponse = response;
+        if (decision.isEncryptResponse()) {
+            responseWrapper = new EncryptionResponseWrapper(response);
+            activeResponse = responseWrapper;
         }
 
-        if (encryptionStatus) {
-            responseWrapper = new EncryptionResponseWrapper(resp);
-        }
+        chain.doFilter(activeRequest, activeResponse);
 
-        // 同时需要加解密
-        if (encryptionStatus && decryptionStatus) {
-            chain.doFilter(requestWrapper, responseWrapper);
-        } else if (encryptionStatus) {
-            // 只需要响应加密
-            chain.doFilter(req, responseWrapper);
-        } else if (decryptionStatus) {
-            // 只需要请求解密
-            chain.doFilter(requestWrapper, resp);
+        if (decision.isEncryptResponse()) {
+            writeResponse(responseWrapper, response);
         }
-
-        // 配置了需要加密才处理
-        if (encryptionStatus) {
-            String responseData = responseWrapper.getResponseData();
-            writeEncryptContent(responseData, response);
-        }
-
     }
 
-    /**
-     * 请求解密处理
-     *
-     * @param requestWrapper
-     * @param req
-     */
-    private void processDecryption(EncryptionReqestWrapper requestWrapper, HttpServletRequest req) {
+    private EncryptionDecision decide(HttpServletRequest request) {
+        String uri = request.getRequestURI();
+        String methodType = request.getMethod();
+        String prefixUri = methodType.toLowerCase(Locale.ROOT) + ":" + uri;
+        String apiUri = resolveApiUri(request);
+
+        boolean decryptRequestBody = matches(ruleRegistry.getRequestDecryptUriList(), uri, prefixUri, apiUri);
+        boolean encryptResponse = matches(ruleRegistry.getResponseEncryptUriList(), uri, prefixUri, apiUri);
+
+        if (encryptionConfig.getDefaultMode() == EncryptionDefaultMode.ALL
+                && !ruleRegistry.hasExplicitEncryptOrDecryptRules()) {
+            decryptRequestBody = true;
+            encryptResponse = true;
+        }
+
+        List<String> decryptParams = findDecryptParams(uri, prefixUri, apiUri);
+
+        boolean decryptIgnored = matches(ruleRegistry.getRequestDecryptUriIgnoreList(), uri, prefixUri, apiUri);
+        if (decryptIgnored) {
+            decryptRequestBody = false;
+            decryptParams = Collections.emptyList();
+        }
+
+        boolean encryptIgnored = matches(ruleRegistry.getResponseEncryptUriIgnoreList(), uri, prefixUri, apiUri);
+        if (encryptIgnored) {
+            encryptResponse = false;
+        }
+
+        if (StringUtils.endsWithIgnoreCase(methodType, RequestMethod.GET.name())) {
+            decryptRequestBody = false;
+        }
+
+        return new EncryptionDecision(decryptRequestBody, encryptResponse, decryptParams);
+    }
+
+    private void processDecryption(EncryptionRequestWrapper requestWrapper,
+                                   HttpServletRequest request,
+                                   EncryptionDecision decision) {
         String requestData = requestWrapper.getRequestData();
-        String uri = req.getRequestURI();
         logger.debug("RequestData: {}", requestData);
         try {
-            if (!StringUtils.endsWithIgnoreCase(req.getMethod(), RequestMethod.GET.name())) {
+            if (decision.isDecryptRequestBody()) {
                 String decryptRequestData = encryptAlgorithm.decrypt(requestData, encryptionConfig.getKey());
                 logger.debug("DecryptRequestData: {}", decryptRequestData);
                 requestWrapper.setRequestData(decryptRequestData);
             }
 
-            // url参数解密
-            Map<String, String> paramMap = new HashMap<>();
-            Enumeration<String> parameterNames = req.getParameterNames();
-            while (parameterNames.hasMoreElements()) {
-                String paramName = parameterNames.nextElement();
-                String prefixUri = req.getMethod().toLowerCase() + ":" + uri;
-                if (encryptionConfig.getRequestDecryptParams(prefixUri).contains(paramName)) {
-                    String paramValue = req.getParameter(paramName);
-                    String decryptParamValue = encryptAlgorithm.decrypt(paramValue, encryptionConfig.getKey());
-                    paramMap.put(paramName, decryptParamValue);
-                }
+            if (!decision.getDecryptParams().isEmpty()) {
+                requestWrapper.setParamMap(decryptParams(request, decision.getDecryptParams()));
             }
-            requestWrapper.setParamMap(paramMap);
         } catch (Exception e) {
             logger.error("请求数据解密失败", e);
-            throw new RuntimeException(e);
+            throw new IllegalStateException(e);
         }
     }
 
-    /**
-     * 输出加密内容
-     *
-     * @param responseData
-     * @param response
-     * @throws IOException
-     */
-    private void writeEncryptContent(String responseData, ServletResponse response) throws IOException {
+    private Map<String, String> decryptParams(HttpServletRequest request, List<String> decryptParams) throws Exception {
+        Map<String, String> paramMap = new HashMap<>();
+        Enumeration<String> parameterNames = request.getParameterNames();
+        while (parameterNames.hasMoreElements()) {
+            String paramName = parameterNames.nextElement();
+            if (!decryptParams.contains(paramName)) {
+                continue;
+            }
+
+            String paramValue = request.getParameter(paramName);
+            if (paramValue != null) {
+                paramMap.put(paramName, encryptAlgorithm.decrypt(paramValue, encryptionConfig.getKey()));
+            }
+        }
+        return paramMap;
+    }
+
+    private void writeResponse(EncryptionResponseWrapper responseWrapper, HttpServletResponse response) throws IOException {
+        if (shouldSkipResponseEncryption(response)) {
+            writePlainContent(responseWrapper, response);
+            return;
+        }
+        writeEncryptContent(responseWrapper.getResponseData(), response);
+    }
+
+    private boolean shouldSkipResponseEncryption(HttpServletResponse response) {
+        int status = response.getStatus();
+        if (status == HttpServletResponse.SC_NO_CONTENT || status == HttpServletResponse.SC_NOT_MODIFIED) {
+            return true;
+        }
+        if (isRedirect(status)) {
+            return true;
+        }
+        if (!encryptionConfig.isEncryptErrorResponses() && status >= 400) {
+            return true;
+        }
+        if (encryptionConfig.isSkipAttachmentResponses() && isAttachment(response.getHeader("Content-Disposition"))) {
+            return true;
+        }
+        String contentType = response.getContentType();
+        if (contentType == null) {
+            return false;
+        }
+        String normalizedContentType = contentType.toLowerCase(Locale.ROOT);
+        return encryptionConfig.getSkipResponseContentTypes().stream()
+                .filter(StringUtils::hasText)
+                .map(type -> type.toLowerCase(Locale.ROOT))
+                .anyMatch(normalizedContentType::startsWith);
+    }
+
+    private boolean isRedirect(int status) {
+        return status >= 300 && status < 400;
+    }
+
+    private boolean isAttachment(String contentDisposition) {
+        return contentDisposition != null
+                && contentDisposition.toLowerCase(Locale.ROOT).contains("attachment");
+    }
+
+    private void writePlainContent(EncryptionResponseWrapper responseWrapper, HttpServletResponse response) throws IOException {
+        byte[] responseBytes = responseWrapper.getResponseBytes();
+        if (response.getStatus() == HttpServletResponse.SC_NO_CONTENT
+                || response.getStatus() == HttpServletResponse.SC_NOT_MODIFIED) {
+            response.setContentLength(0);
+            return;
+        }
+        response.setContentLength(responseBytes.length);
+        ServletOutputStream out = response.getOutputStream();
+        out.write(responseBytes);
+        out.flush();
+    }
+
+    private void writeEncryptContent(String responseData, HttpServletResponse response) throws IOException {
         logger.debug("ResponseData: {}", responseData);
         ServletOutputStream out = null;
         try {
@@ -201,7 +267,7 @@ public class EncryptionFilter implements Filter {
             out.write(responseBytes);
         } catch (Exception e) {
             logger.error("响应数据加密失败", e);
-            throw new RuntimeException(e);
+            throw new IllegalStateException(e);
         } finally {
             if (out != null) {
                 out.flush();
@@ -209,46 +275,56 @@ public class EncryptionFilter implements Filter {
         }
     }
 
-    private boolean contains(List<String> list, String uri, String methodType, HttpServletRequest request) {
+    private boolean matches(List<String> list, String uri, String prefixUri, String apiUri) {
         if (CollectionUtils.isEmpty(list)) {
             return false;
         }
-        if (list.contains(uri)) {
-            return true;
-        }
-        String prefixUri = methodType.toLowerCase() + ":" + uri;
-        logger.debug("contains uri: {}", prefixUri);
-        if (list.contains(prefixUri)) {
-            return true;
-        }
-
-        // 优先用AntPathMatcher，其实用这个也够了，底层是一样的，下面用的方式兜底
-        for (String u : list) {
-            boolean match = antPathMatcher.match(u, uri) || antPathMatcher.match(u, prefixUri);
-            if (match) {
+        for (String rule : list) {
+            if (!StringUtils.hasText(rule)) {
+                continue;
+            }
+            if (rule.equals(uri) || rule.equals(prefixUri) || rule.equals(apiUri)) {
+                return true;
+            }
+            if (antPathMatcher.match(rule, uri)
+                    || antPathMatcher.match(rule, prefixUri)
+                    || (apiUri != null && antPathMatcher.match(rule, apiUri))) {
                 return true;
             }
         }
-
-        try {
-            // 支持RestFul风格API
-            // 采用Spring MVC内置的匹配方式将当前请求匹配到对应的Controller Method上，获取注解进行匹配是否要加解密
-            HandlerExecutionChain handler = getHandler(request);
-            if (Objects.isNull(handler)) {
-                return false;
-            }
-
-            if (Objects.nonNull(handler.getHandler()) && handler.getHandler() instanceof HandlerMethod) {
-                HandlerMethod handlerMethod = (HandlerMethod) handler.getHandler();
-                String apiUri = RequestUriUtils.getApiUri(handlerMethod.getBeanType(), handlerMethod.getMethod(), request.getContextPath());
-                if (list.contains(apiUri)) {
-                    return true;
-                }
-            }
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
         return false;
+    }
+
+    private List<String> findDecryptParams(String uri, String prefixUri, String apiUri) {
+        List<String> params = ruleRegistry.getRequestDecryptParams(prefixUri);
+        if (!params.isEmpty()) {
+            return params;
+        }
+        params = ruleRegistry.getRequestDecryptParams(uri);
+        if (!params.isEmpty()) {
+            return params;
+        }
+        if (apiUri != null) {
+            params = ruleRegistry.getRequestDecryptParams(apiUri);
+        }
+        return params;
+    }
+
+    private String resolveApiUri(HttpServletRequest request) {
+        try {
+            HandlerExecutionChain handler = getHandler(request);
+            if (handler == null || !(handler.getHandler() instanceof HandlerMethod)) {
+                return null;
+            }
+            HandlerMethod handlerMethod = (HandlerMethod) handler.getHandler();
+            return RequestUriUtils.getApiUri(
+                    handlerMethod.getBeanType(),
+                    handlerMethod.getMethod(),
+                    request.getContextPath()
+            );
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     protected HandlerExecutionChain getHandler(HttpServletRequest request) throws Exception {
@@ -264,10 +340,5 @@ public class EncryptionFilter implements Filter {
             }
         }
         return null;
-    }
-
-    @Override
-    public void destroy() {
-
     }
 }

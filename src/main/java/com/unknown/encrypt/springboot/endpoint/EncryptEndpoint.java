@@ -1,6 +1,6 @@
 package com.unknown.encrypt.springboot.endpoint;
 
-import com.unknown.encrypt.core.EncryptionConfig;
+import com.unknown.encrypt.core.EncryptionRuleRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;
@@ -15,15 +15,16 @@ import java.util.Map;
 public class EncryptEndpoint {
 
     @Autowired
-    private EncryptionConfig encryptionConfig;
+    private EncryptionRuleRegistry encryptionRuleRegistry;
 
     @ReadOperation
     public Map<String, Object> encryptConfig() {
         Map<String, Object> data = new HashMap<>();
-        data.put("responseEncryptUriList", encryptionConfig.getResponseEncryptUriList());
-        data.put("responseEncryptUriIgnoreList", encryptionConfig.getResponseEncryptUriIgnoreList());
-        data.put("requestDecryptUriList", encryptionConfig.getRequestDecryptUriList());
-        data.put("requestDecryptUriIgnoreList", encryptionConfig.getRequestDecryptUriIgnoreList());
+        data.put("responseEncryptUriList", encryptionRuleRegistry.getResponseEncryptUriList());
+        data.put("responseEncryptUriIgnoreList", encryptionRuleRegistry.getResponseEncryptUriIgnoreList());
+        data.put("requestDecryptUriList", encryptionRuleRegistry.getRequestDecryptUriList());
+        data.put("requestDecryptUriIgnoreList", encryptionRuleRegistry.getRequestDecryptUriIgnoreList());
+        data.put("requestDecryptParams", encryptionRuleRegistry.getRequestDecryptParams());
         return data;
     }
 

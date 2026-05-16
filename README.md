@@ -55,12 +55,18 @@ Spring Boot 2.7 会通过 `spring.factories` 自动加载配置。`@EnableEncryp
 spring:
   encrypt:
     enabled: true
-    key: c38e60ea2c2994fd
+    default-mode: explicit
+    key: d7b85f6e214abcdad7b85f6e214abcda
     debug: false
     response-charset: UTF-8
     url-patterns:
       - /*
     order: 1
+    encrypt-error-responses: false
+    skip-attachment-responses: true
+    skip-response-content-types:
+      - application/octet-stream
+      - text/event-stream
 ```
 
 配置说明：
@@ -68,19 +74,31 @@ spring:
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
 | `spring.encrypt.enabled` | `true` | 是否注册加解密过滤器 |
-| `spring.encrypt.key` | `d7b85f6e214abcda` | AES key，当前默认算法按 Hex 字符串处理 |
+| `spring.encrypt.default-mode` | `explicit` | 空规则时的默认行为，支持 `explicit`、`all` |
+| `spring.encrypt.key` | `d7b85f6e214abcdad7b85f6e214abcda` | AES key，当前默认算法按 Hex 字符串处理 |
 | `spring.encrypt.debug` | `false` | 调试模式，开启后不执行加解密 |
 | `spring.encrypt.response-charset` | `UTF-8` | 响应加密前后的字符集 |
 | `spring.encrypt.url-patterns` | `/*` | Filter 拦截路径 |
 | `spring.encrypt.order` | `1` | Filter 顺序 |
+| `spring.encrypt.encrypt-error-responses` | `false` | 是否加密 HTTP 4xx/5xx 响应 |
+| `spring.encrypt.skip-attachment-responses` | `true` | 是否跳过文件下载响应 |
+| `spring.encrypt.skip-response-content-types` | `application/octet-stream`, `text/event-stream` | 不加密的响应类型前缀 |
 
 生产环境不要把密钥写死在仓库配置里，应该通过外部配置或环境变量注入。
 
 ## 默认行为
 
-默认行为必须明确：如果没有配置任何 `request-decrypt-uri-list` 和 `response-encrypt-uri-list`，也没有通过注解收集到任何加解密 URI，starter 会认为所有请求都需要解密、所有响应都需要加密。
+默认行为必须明确：`default-mode` 默认为 `explicit`。没有配置任何 `request-decrypt-uri-list` 和 `response-encrypt-uri-list`，也没有通过注解收集到任何加解密 URI 时，starter 不会处理请求或响应。
 
-这个默认值适合“整个 API 服务都走加密协议”的应用，不适合混合开放接口。混合场景建议显式配置 URI 列表，或者至少配置 ignore 列表排除这些端点：
+如果整个 API 服务都走加密协议，可以改成 `all`：
+
+```yaml
+spring:
+  encrypt:
+    default-mode: all
+```
+
+`all` 模式会在没有任何显式加解密 URI 时默认请求解密、响应加密。混合场景建议继续使用 `explicit`，或者至少配置 ignore 列表排除这些端点：
 
 ```yaml
 spring:
@@ -100,7 +118,7 @@ spring:
 匹配决策顺序：
 
 1. 先判断接口是否命中请求解密列表或响应加密列表。
-2. 如果两个列表都为空，则默认请求解密和响应加密都开启。
+2. 如果两个列表都为空，并且 `default-mode=all`，则默认请求解密和响应加密都开启。
 3. 再判断 ignore 列表，ignore 命中后会关闭对应方向的处理。
 4. 最终只有需要处理的方向才会包装 request 或 response。
 
@@ -175,7 +193,7 @@ public UserDto user(@PathVariable Long id) {
 推导结果是请求解密 URI：`post:/api/order`，并解密 body。
 
 ```java
-@Decrypt(decyptParam = "keyword")
+@Decrypt(decryptParam = "keyword")
 @GetMapping("/api/search")
 ```
 
@@ -216,25 +234,27 @@ URI 规则支持：
 `@Decrypt` 支持指定需要解密的 query 参数：
 
 ```java
-@Decrypt(decyptParam = "name,phone")
+@Decrypt(decryptParam = "name,phone")
 @GetMapping("/api/search")
 public Result search(String name, String phone, Integer page) {
     return service.search(name, phone, page);
 }
 ```
 
-也可以通过配置指定。兼容旧拼写 `requestDecyptParam`，也支持 `requestDecryptParam`、`request-decypt-param`、`request-decrypt-param`：
+也可以通过配置指定。推荐使用 `request-decrypt-params`：
 
 ```yaml
 spring:
   encrypt:
-    request-decrypt-param:
+    request-decrypt-params:
       get$/api/search: name,phone
 ```
 
 配置 key 中用 `$` 表示 `:`，最终会解析成 `get:/api/search`。
 
 只会覆盖被配置为需要解密的参数；未配置的普通 query 参数会保留原始值。
+
+为兼容旧配置，`request-decrypt-param`、`requestDecryptParam`、`requestDecyptParam` 仍会绑定到同一份参数配置。
 
 ## 自定义算法
 

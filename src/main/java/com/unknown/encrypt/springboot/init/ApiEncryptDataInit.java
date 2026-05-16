@@ -1,5 +1,7 @@
 package com.unknown.encrypt.springboot.init;
 
+import com.unknown.encrypt.core.EncryptionConfig;
+import com.unknown.encrypt.core.EncryptionRuleRegistry;
 import com.unknown.encrypt.springboot.annotation.Decrypt;
 import com.unknown.encrypt.springboot.annotation.DecryptIgnore;
 import com.unknown.encrypt.springboot.annotation.Encrypt;
@@ -7,156 +9,171 @@ import com.unknown.encrypt.springboot.annotation.EncryptIgnore;
 import com.unknown.encrypt.util.RequestUriUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.BeansException;
 import org.springframework.context.ApplicationContext;
-import org.springframework.context.ApplicationContextAware;
 import org.springframework.core.annotation.AnnotationUtils;
-import org.springframework.core.env.AbstractEnvironment;
-import org.springframework.core.env.EnumerablePropertySource;
-import org.springframework.core.env.Environment;
-import org.springframework.core.env.PropertySource;
 import org.springframework.stereotype.Controller;
+import org.springframework.util.ClassUtils;
 import org.springframework.util.StringUtils;
 
 import java.lang.reflect.Method;
 import java.util.*;
 
-public class ApiEncryptDataInit implements ApplicationContextAware {
-	
-	private Logger logger = LoggerFactory.getLogger(ApiEncryptDataInit.class);
-	
-	/**
-	 * 需要对响应内容进行加密的接口URI<br>
-	 * 比如：/user/list<br>
-	 * 不支持@PathVariable格式的URI
-	 */
-	public static List<String> responseEncryptUriList = new ArrayList<>();
-	
-	/**
-	 * 需要对请求内容进行解密的接口URI<br>
-	 * 比如：/user/list<br>
-	 * 不支持@PathVariable格式的URI
-	 */
-	public static List<String> requestDecryptUriList = new ArrayList<>();
-    
-	/**
-	 * 忽略加密的接口URI<br>
-	 * 比如：/user/list<br>
-	 * 不支持@PathVariable格式的URI
-	 */
-	public static List<String> responseEncryptUriIgnoreList = new ArrayList<>();
-	
-	/**
-	 * 忽略对请求内容进行解密的接口URI<br>
-	 * 比如：/user/list<br>
-	 * 不支持@PathVariable格式的URI
-	 */
-	public static List<String> requestDecryptUriIgnoreList = new ArrayList<String>();
+public class ApiEncryptDataInit {
 
-	/**
-	 * Url参数需要解密的配置
-	 * 比如：/user/list?name=加密内容<br>
-	 * 格式：Key API路径  Value 需要解密的字段
-	 * 示列：/user/list  [name,age]
-	 */
-	public static Map<String, List<String>> requestDecryptParamMap = new HashMap<>();
+    private static final Logger logger = LoggerFactory.getLogger(ApiEncryptDataInit.class);
 
-	private String contextPath;
-	
-    @Override
-    public void setApplicationContext(ApplicationContext ctx) throws BeansException {
-		clear();
-    	this.contextPath = ctx.getEnvironment().getProperty("server.servlet.context-path");
-		Map<String, Object> beanMap = ctx.getBeansWithAnnotation(Controller.class);
-        initData(beanMap);
-        initRequestDecyptParam(ctx.getEnvironment());
+    public EncryptionRuleRegistry createRuleRegistry(ApplicationContext context, EncryptionConfig config) {
+        AnnotationRules annotationRules = collectAnnotationRules(context);
+        return new EncryptionRuleRegistry(
+                merge(config.getResponseEncryptUriList(), annotationRules.responseEncryptUriList),
+                merge(config.getRequestDecryptUriList(), annotationRules.requestDecryptUriList),
+                merge(config.getResponseEncryptUriIgnoreList(), annotationRules.responseEncryptUriIgnoreList),
+                merge(config.getRequestDecryptUriIgnoreList(), annotationRules.requestDecryptUriIgnoreList),
+                mergeParams(config.getRequestDecryptParams(), annotationRules.requestDecryptParams)
+        );
     }
 
-	private void clear() {
-		responseEncryptUriList.clear();
-		requestDecryptUriList.clear();
-		responseEncryptUriIgnoreList.clear();
-		requestDecryptUriIgnoreList.clear();
-		requestDecryptParamMap.clear();
-	}
+    private AnnotationRules collectAnnotationRules(ApplicationContext context) {
+        String contextPath = context.getEnvironment().getProperty("server.servlet.context-path");
+        Map<String, Object> beanMap = context.getBeansWithAnnotation(Controller.class);
+        AnnotationRules rules = new AnnotationRules();
 
-	/**
-	 * 初始化Url 参数解密配置
-	 * @param environment
-	 */
-	private void initRequestDecyptParam(Environment environment) {
-		for(Iterator it = ((AbstractEnvironment) environment).getPropertySources().iterator(); it.hasNext(); ) {
-			PropertySource propertySource = (PropertySource) it.next();
-			if (propertySource instanceof EnumerablePropertySource) {
-				for(String name : ((EnumerablePropertySource)propertySource).getPropertyNames()) {
-					if (name.startsWith("spring.encrypt.requestDecyptParam")
-							|| name.startsWith("spring.encrypt.requestDecryptParam")
-							|| name.startsWith("spring.encrypt.request-decypt-param")
-							|| name.startsWith("spring.encrypt.request-decrypt-param")) {
-						String[] keys = name.split("\\.");
-						String key = keys[keys.length - 1];
-						String property = environment.getProperty(name);
-						requestDecryptParamMap.put(key.replace("$", ":"), Arrays.asList(property.split(",")));
-					}
-				}
-			}
-		}
-	}
-
-	private void initData(Map<String, Object> beanMap) {
-		if (beanMap != null) {
-            for (Object bean : beanMap.values()) {
-                Class<?> clz = bean.getClass();
-                Method[] methods = clz.getMethods();
-                for (Method method : methods) {
-                	Encrypt encrypt = AnnotationUtils.findAnnotation(method, Encrypt.class);
-                	if (encrypt != null) {
-                		// 注解中的URI优先级高
-                    	String uri = encrypt.value();
-                    	if (!StringUtils.hasText(uri)) {
-                    		uri = RequestUriUtils.getApiUri(clz, method, contextPath);
-						}
-                        logger.debug("Encrypt URI: {}", uri);
-                        responseEncryptUriList.add(uri);
-                	}
-                	Decrypt decrypt = AnnotationUtils.findAnnotation(method, Decrypt.class);
-                    if (decrypt != null) {
-                    	String uri = decrypt.value();
-                    	if (!StringUtils.hasText(uri)) {
-                    		uri = RequestUriUtils.getApiUri(clz, method, contextPath);
-						}
-
-                    	String decyptParam = decrypt.decyptParam();
-						if (StringUtils.hasText(decyptParam)) {
-							requestDecryptParamMap.put(uri, Arrays.asList(decyptParam.split(",")));
-						}
-
-                        logger.debug("Decrypt URI: {}", uri);
-                        requestDecryptUriList.add(uri);
-                    }
-                    EncryptIgnore encryptIgnore = AnnotationUtils.findAnnotation(method, EncryptIgnore.class);
-                	if (encryptIgnore != null) {
-                		// 注解中的URI优先级高
-                    	String uri = encryptIgnore.value();
-                    	if (!StringUtils.hasText(uri)) {
-                    		uri = RequestUriUtils.getApiUri(clz, method, contextPath);
-						}
-                        logger.debug("EncryptIgnore URI: {}", uri);
-                        responseEncryptUriIgnoreList.add(uri);
-                	}
-                	DecryptIgnore decryptIgnore = AnnotationUtils.findAnnotation(method, DecryptIgnore.class);
-                    if (decryptIgnore != null) {
-                    	String uri = decryptIgnore.value();
-                    	if (!StringUtils.hasText(uri)) {
-                    		uri = RequestUriUtils.getApiUri(clz, method, contextPath);
-						}
-                        logger.debug("DecryptIgnore URI: {}", uri);
-                        requestDecryptUriIgnoreList.add(uri);
-                    }
-                }
+        for (Object bean : beanMap.values()) {
+            Class<?> beanClass = ClassUtils.getUserClass(bean);
+            Method[] methods = beanClass.getMethods();
+            for (Method method : methods) {
+                collectEncryptRule(beanClass, method, contextPath, rules);
+                collectDecryptRule(beanClass, method, contextPath, rules);
+                collectEncryptIgnoreRule(beanClass, method, contextPath, rules);
+                collectDecryptIgnoreRule(beanClass, method, contextPath, rules);
             }
         }
-	}
-    
 
+        return rules;
+    }
+
+    private void collectEncryptRule(Class<?> beanClass, Method method, String contextPath, AnnotationRules rules) {
+        Encrypt encrypt = AnnotationUtils.findAnnotation(method, Encrypt.class);
+        if (encrypt == null) {
+            return;
+        }
+
+        String uri = resolveUri(encrypt.value(), beanClass, method, contextPath);
+        logger.debug("Encrypt URI: {}", uri);
+        rules.responseEncryptUriList.add(uri);
+    }
+
+    private void collectDecryptRule(Class<?> beanClass, Method method, String contextPath, AnnotationRules rules) {
+        Decrypt decrypt = AnnotationUtils.findAnnotation(method, Decrypt.class);
+        if (decrypt == null) {
+            return;
+        }
+
+        String uri = resolveUri(decrypt.value(), beanClass, method, contextPath);
+        String decryptParam = resolveDecryptParam(decrypt);
+        if (StringUtils.hasText(decryptParam)) {
+            rules.requestDecryptParams.put(uri, splitParams(decryptParam));
+        }
+
+        logger.debug("Decrypt URI: {}", uri);
+        rules.requestDecryptUriList.add(uri);
+    }
+
+    private void collectEncryptIgnoreRule(Class<?> beanClass, Method method, String contextPath, AnnotationRules rules) {
+        EncryptIgnore encryptIgnore = AnnotationUtils.findAnnotation(method, EncryptIgnore.class);
+        if (encryptIgnore == null) {
+            return;
+        }
+
+        String uri = resolveUri(encryptIgnore.value(), beanClass, method, contextPath);
+        logger.debug("EncryptIgnore URI: {}", uri);
+        rules.responseEncryptUriIgnoreList.add(uri);
+    }
+
+    private void collectDecryptIgnoreRule(Class<?> beanClass, Method method, String contextPath, AnnotationRules rules) {
+        DecryptIgnore decryptIgnore = AnnotationUtils.findAnnotation(method, DecryptIgnore.class);
+        if (decryptIgnore == null) {
+            return;
+        }
+
+        String uri = resolveUri(decryptIgnore.value(), beanClass, method, contextPath);
+        logger.debug("DecryptIgnore URI: {}", uri);
+        rules.requestDecryptUriIgnoreList.add(uri);
+    }
+
+    private String resolveUri(String configuredUri, Class<?> beanClass, Method method, String contextPath) {
+        if (StringUtils.hasText(configuredUri)) {
+            return configuredUri;
+        }
+        return RequestUriUtils.getApiUri(beanClass, method, contextPath);
+    }
+
+    @SuppressWarnings("deprecation")
+    private String resolveDecryptParam(Decrypt decrypt) {
+        if (StringUtils.hasText(decrypt.decryptParam())) {
+            return decrypt.decryptParam();
+        }
+        return decrypt.decyptParam();
+    }
+
+    private List<String> splitParams(String params) {
+        List<String> result = new ArrayList<>();
+        Arrays.stream(params.split(","))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .forEach(result::add);
+        return result;
+    }
+
+    private List<String> merge(List<String> configuredRules, List<String> annotationRules) {
+        List<String> merged = new ArrayList<>();
+        if (configuredRules != null) {
+            merged.addAll(configuredRules);
+        }
+        if (annotationRules != null) {
+            merged.addAll(annotationRules);
+        }
+        return merged;
+    }
+
+    private Map<String, List<String>> mergeParams(Map<String, List<String>> configuredParams,
+                                                  Map<String, List<String>> annotationParams) {
+        Map<String, List<String>> merged = new LinkedHashMap<>();
+        if (configuredParams != null) {
+            configuredParams.forEach((key, value) -> merged.put(normalizeParamUri(key), splitParamList(value)));
+        }
+        if (annotationParams != null) {
+            annotationParams.forEach((key, value) -> merged.put(key, splitParamList(value)));
+        }
+        return merged;
+    }
+
+    private String normalizeParamUri(String uri) {
+        return uri == null ? null : uri.replace("$", ":");
+    }
+
+    private List<String> splitParamList(List<String> params) {
+        List<String> result = new ArrayList<>();
+        if (params == null) {
+            return result;
+        }
+        for (String param : params) {
+            if (param == null) {
+                continue;
+            }
+            Arrays.stream(param.split(","))
+                    .map(String::trim)
+                    .filter(StringUtils::hasText)
+                    .forEach(result::add);
+        }
+        return result;
+    }
+
+    private static class AnnotationRules {
+        private final List<String> responseEncryptUriList = new ArrayList<>();
+        private final List<String> requestDecryptUriList = new ArrayList<>();
+        private final List<String> responseEncryptUriIgnoreList = new ArrayList<>();
+        private final List<String> requestDecryptUriIgnoreList = new ArrayList<>();
+        private final Map<String, List<String>> requestDecryptParams = new LinkedHashMap<>();
+    }
 }

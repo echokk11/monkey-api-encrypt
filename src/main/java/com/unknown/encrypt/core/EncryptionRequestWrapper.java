@@ -14,7 +14,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
-public class EncryptionReqestWrapper extends HttpServletRequestWrapper  {
+public class EncryptionRequestWrapper extends HttpServletRequestWrapper  {
 	
 	private byte[] requestBody = new byte[0];
 
@@ -22,7 +22,7 @@ public class EncryptionReqestWrapper extends HttpServletRequestWrapper  {
 
     private Map<String, String> paramMap = new HashMap<>();
 
-	public EncryptionReqestWrapper(HttpServletRequest request) {
+	public EncryptionRequestWrapper(HttpServletRequest request) {
 		super(request);
         this.charset = resolveCharset(request.getCharacterEncoding());
 		try {
